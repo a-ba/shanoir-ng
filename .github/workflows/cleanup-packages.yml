@@ -1,0 +1,32 @@
+# Create a Docker image for each microservice in Shanoir
+name: Publish Docker images
+
+env:
+  DOCKER_REPOSITORY: ghcr.io/${{ github.repository }}
+  GIT_REPO_URL: https://github.com/${{ github.repository }}
+  TAG: ${{ github.ref_name }}
+on:
+  workflow_dispatch:
+  push:
+#  push:
+#TODO: disable on pull-request
+#  push:
+#    tags:
+#      - '*'
+  
+jobs:
+  cleanup_packages:
+    name: Cleanup old docker images
+    runs-on: ubuntu-latest
+    permissions:
+      packages: write
+      contents: read
+    steps:
+      - name: show repo name
+        run: echo ${{ github.repository_owner }}
+      - name: list packages
+        run: curl
+
+
+            
+
