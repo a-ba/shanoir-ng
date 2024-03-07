@@ -26,6 +26,7 @@ jobs:
         run: echo ${{ github.repository_owner }}
       - name: list packages
         run: |
+          #FIXME: cet endpoint ne fonctionne pas avec un token actions
           curl -v -H 'Authorization: Bearer ${{ secrets.GITHUB_TOKEN }}' \
             'https://api.github.com/users/${{ github.repository_owner }}/packages?package_type=container'
 
