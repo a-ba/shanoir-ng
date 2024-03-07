@@ -25,8 +25,8 @@ jobs:
       - name: show repo name
         run: echo ${{ github.repository_owner }}
       - name: list packages
-        run: >
-          curl -v -H 'Authorization: Bearer ${{ secrets.GITHUB_TOKEN }}'
+        run: |
+          curl -v -H 'Authorization: Bearer ${{ secrets.GITHUB_TOKEN }}' \
             'https://api.github.com/users/${{ github.repository_owner }}/packages?package_type=container'
 
 
