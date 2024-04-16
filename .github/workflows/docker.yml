@@ -5,36 +5,25 @@ env:
   DOCKER_REPOSITORY: ghcr.io/${{ github.repository }}
   GIT_REPO_URL: https://github.com/${{ github.repository }}
 
-  IMAGES: >-
-    database 
-   #datasets import keycloak keycloak-database nginx nifti-conversion
-   #preclinical solr studies users
-
   # production builds
   # - triggered by pushing a tag
   # - builds the current commit
   # - cache is disabled
   # development builds
   # - triggerd by workflow_call events (used by the deploy-qualif.yml workflow)
-  # - builds the commit provided in the 'commit' input variable
+  # - builds the commit provided in the 'sha' input variable
   # - cache is enabled
   PRODUCTION: ${{ github.event_name == 'push' && '1' || '' }}
 on:
   push:
     tags:
       - '*'
-#  workflow_dispatch: # TODO: remove
-#    inputs:
-#      commit:
-#        description: 'commit id to be built'
-#        required: true
   workflow_call:
     inputs:
       sha: 
         description: 'git commit to be built'
         type: string
         required: true
-#TODO: disable on pull-request
   
 jobs:
   #NOTE: mostly working
@@ -45,16 +34,16 @@ jobs:
   #(not possible) - remove the 'commit' argument and use a 'builder' branch instead 
   #(not possible)   (FIXME: is it possible to restrict a token to a specific branch ?)
   #(done) - remove signing stuff for the moment
-  # - add an input:
-  #     runner:
-  #       description: "target runner for the deployment"
-  #       required: true
-  #       type: choice
-  #       options: [ shanoir-2016, eskemm-poc ]
+  #(done) - add an input:
+  #(done)     runner:
+  #(done)       description: "target runner for the deployment"
+  #(done)       required: true
+  #(done)       type: choice
+  #(done)       options: [ shanoir-2016, eskemm-poc ]
   # - test the full pipeline
   # - clean the scripts
   # - require either --all or --neurinfo|--ofsep or --none
-  # - make the --ofsep|--n
+  # - add --no-reset
   # - implement deployment mutex in ansible
   # - delete the old docker images
   # - query the image digests from the worflow_run logs and store them locally,
@@ -66,7 +55,7 @@ jobs:
   #     - rebuild if one image is missing
   #     - reuse the existinig image otherwise (possibly w/ pulling)
   # - CLI should be:
-  #   - deploy-shanoir-qualif [--rebuild] [--none|--neurinfo|--ofsep] [REF|COMMIT]
+  #   - deploy-shanoir-qualif [--rebuild] [--no-reset] [--none|--neurinfo|--ofsep] [REF|COMMIT]
   #     - if no commit is provided, then reuse the previous image
   #     - commit id should be stored in a docker-compose variable (and updated
   #     when deploy-shanoir is run with an explicit commit)
@@ -74,76 +63,7 @@ jobs:
   #(done)   (this simplifies the arguments to the job and allows running directly from github)
   # - expire old qualif builds
 
-  #TODO: skip in production
-#  check_commit:
-#    runs-on: ubuntu-latest
-#    outputs:
-#      sha:    ${{ steps.resolve.outputs.sha }}
-#      status: ${{ steps.resolve.outputs.status }}
-#    permissions:
-#      packages: read
-#    steps:
-#      - name: resolve git commit ${{ inputs.commit }} and query the container registry
-#        id: resolve
-#        env:
-#          COMMIT: ${{ inputs.commit }}
-#        shell: python
-#        run: |
-#          import os, pathlib, re, requests
-#          from urllib.parse import quote_plus
-#
-#          def get(endpoint: str) -> requests.Response:
-#            return requests.get(f"${{ github.api_url }}{endpoint}", headers={
-#                "Authorization": f"Bearer ${{ github.token }}",
-#                "X-GitHub-Api-Version": "2022-11-28",
-#                })
-#
-#          def resolve_commit(commit: str) -> str:
-#            repo = "/repos/${{ github.repository }}"
-#            
-#            # match by tag/branch
-#            for prefix in ("", "tags/", "heads/"):
-#              rep = get(f"{repo}/git/ref/{quote_plus(prefix + commit)}")
-#              if rep.ok:
-#                js = rep.json()
-#                assert js["object"]["type"] == "commit", "intermediate objects not supported (eg: tag objects)"
-#                return js["object"]["sha"]
-#
-#            # match by commit
-#            if re.fullmatch(f"[0-9a-f]+", commit):
-#              # match by commit
-#              rep = get(f"{repo}/commits/{quote_plus(commit)}")
-#              if rep.ok:
-#                return rep.json()["sha"]
-#
-#            if rep.status_code == 404:
-#              raise ValueError(f"unknown git commit: {commit}")
-#            rep.raise_for_status()
-#
-#          def check_docker_images(sha: str) -> str:
-#            # FIXME: nifti-conversion will not be found
-#            #  -> should run push_to_registry even if this job fails (is that possible?)
-#            for image in os.environ["IMAGES"].split():
-#              rep = get(f"/users/a-ba/packages/container/shanoir-ng%2F{image}/versions")
-#              if rep.ok:
-#                if any(sha in version["metadata"]["container"]["tags"] for version in rep.json()):
-#                  continue
-#              elif rep.status_code != 404:
-#                  rep.raise_for_status()
-#              print(f"image shanoir-ng/{image}:{sha} not yet built and pushed to the registry")
-#              return ""
-#            return "ok"
-#
-#          sha = resolve_commit(os.environ["COMMIT"])
-#          print(f"resolved git commit: {sha}")
-#          status = check_docker_images(sha)
-#          if status:
-#            print("docker images already built")
-#          pathlib.Path(os.environ["GITHUB_OUTPUT"]).write_text(f"sha={sha}\nstatus={status}\n")
-
   build_images:
-#    needs: check_commit
-#    if: needs.check_commit.outputs.status != 'ok'
     runs-on: ubuntu-latest
     permissions:
       packages: write
@@ -204,9 +124,10 @@ jobs:
 #        uses: sigstore/cosign-installer@6e04d228eb30da1757ee4e1dd75a0ec73a653e06 #v3.1.1
 #        with:
 #          cosign-release: 'v2.1.1'
-      
-      - name: Maven build
-        run: mvn -f ./shanoir-ng-parent/pom.xml install -DskipTests
+ 
+# TODO: restore maven build
+#      - name: Maven build
+#        run: mvn -f ./shanoir-ng-parent/pom.xml install -DskipTests
 
       # note: ultimately we shoud build the images with the docker/bake-action
       # (but buildx bake is still experimental)
@@ -243,7 +164,7 @@ jobs:
                 f"docker-compose/{image}"])
               digest = json.load(open(f"{tmp}/mdf"))["containerimage.digest"]
 
-#              if env['GITHUB_EVENT_NAME'] != "pull_request":
+#              if env['PRODUCTION']:
 #                sys.stderr.write(f"#\n#   Signing {image}:{tag}\n#\n")
 #                subprocess.check_call(["cosign", "sign", "--yes", "--tlog-upload=false", f"{repo}:{tag}@{digest}"])
             
