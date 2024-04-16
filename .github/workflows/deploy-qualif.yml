@@ -5,7 +5,7 @@ on:
   workflow_dispatch:
     inputs:
       commit:
-        description: "commit id to be deployed"
+        description: "commit id to be deployed (eg: heads/deploy, pull/445/head)"
         required: true
       owner:
         description: "person who triggered this workflow"
@@ -14,12 +14,15 @@ on:
         description: "unique id for this deployment"
         required: true
       neurinfo:
+        description: "deploy to neurinfo-qualif"
         type: boolean
         default: false
       ofsep:
+        description: "deploy to ofsep-qualif"
         type: boolean
         default: false
       poc-neurinfo:
+        description: "deploy to poc-neurinfo-qualif"
         type: boolean
         default: false
       runner:
@@ -29,42 +32,48 @@ on:
         options: [ shanoir-deploy, shanoir-2016, eskemm-poc ] # TODO: cleanup
 
 jobs:
+  # Prepare the deployment. This computes the following variables:
+  # - sha             the git commit id (sha1 sum) resolved from the value of
+  #                   input.commit
+  # - already_built   set to "yes" if the docker images for this commit are
+  #                   already built and pushed to the registry
+  # - targets         json list of targets to be deployed (eg: ["neurinfo"])
   prepare:
     runs-on: ubuntu-latest
     outputs:
-      # id of the git commit to be deployed
       sha:           ${{ steps.prepare.outputs.sha }}
-      # set to "yes" if the docker images are already built for this commit
       already_built: ${{ steps.prepare.outputs.already_built }}
-      # list of the enabled deploy targets 
       targets:       ${{ steps.prepare.outputs.targets }}
     permissions:
       packages: read
     steps:
-      - name: prepare deployment (resolve git commit, query registry, identify targets)
-        id: prepare 
+      - name: prepare deployment
+        id: prepare
         env:
           INPUTS: ${{ toJSON(inputs) }}
         shell: python
         run: |
           import json, os, pathlib, re, requests
-          from typing import Optional
           from urllib.parse import quote_plus
 
-          def get(endpoint: str) -> Optional[requests.Response]:
+          # GET a github API endpoint
+          # - return a json-decoded object if successful
+          # - return None if 404
+          # - raise an exception otherwise
+          def get(endpoint: str):
             rep = requests.get(f"${{ github.api_url }}{endpoint}", headers={
                 "Authorization": f"Bearer ${{ github.token }}",
                 "X-GitHub-Api-Version": "2022-11-28",
                 })
-            if rep.ok:
-              return rep.json()
-            if rep.status_code == 404:
-              return None
-            rep.raise_for_status()
+            return (rep.json() if rep.ok                 else
+                    None       if rep.status_code == 404 else
+                    rep.raise_for_status())
 
+          # Resolve a git commit
+          # return the sha1 identifier (or raise an exception if unknown)
           def resolve_commit(commit: str) -> str:
             repo = "/repos/${{ github.repository }}"
-            
+
             # match by tag/branch
             for prefix in ("", "tags/", "heads/"):
               if rep := get(f"{repo}/git/ref/{quote_plus(prefix + commit)}"):
@@ -73,16 +82,16 @@ jobs:
 
             # match by commit
             if re.fullmatch(f"[0-9a-f]+", commit):
-              # match by commit
               if rep := get(f"{repo}/commits/{quote_plus(commit)}"):
                 return rep["sha"]
 
             raise ValueError(f"unknown git commit: {commit}")
 
+          # check if the shanoir-ng images for the given commit id are already present in the registry
+          # return "yes" if present and "" otherwise
           def check_docker_images(sha: str) -> str:
-            # FIXME: nifti-conversion will not be found
-            #  -> should run push_to_registry even if this job fails (is that possible?)
             for image in ["database"]:
+              # FIXME: uri
               if rep := get(f"/users/a-ba/packages/container/shanoir-ng%2F{image}/versions"):
                 if any(sha in version["metadata"]["container"]["tags"] for version in rep):
                   continue
@@ -90,17 +99,25 @@ jobs:
               return ""
             return "yes"
 
+
           inputs = json.loads(os.environ["INPUTS"])
+
           print("git commit to be deployed: {inputs['commit']}")
           sha = resolve_commit(inputs['commit'])
           print(f"  --> resolved to: {sha}")
+
           already_built = check_docker_images(sha)
           if already_built:
             print("docker images already built")
+
           targets = [t for t in ("neurinfo", "ofsep", "poc-neurinfo") if inputs[t]]
+          print("will deploy to targets: {targets}")
+
           pathlib.Path(os.environ["GITHUB_OUTPUT"]).write_text(
             f"sha={sha}\nalready_built={already_built}\ntargets={json.dumps(targets)}\n")
 
+  # Build the docker images and push them to the registry
+  # (skipped if the images are already present in the registry)
   build:
     needs: prepare
     if: needs.prepare.outputs.already_built != 'yes'
@@ -108,55 +125,27 @@ jobs:
     with:
       sha: "${{ needs.prepare.outputs.sha }}"
 
+  # Report the result of the 'build' job to the runner
+  # (always run)
   post_build:
     runs-on: ${{ inputs.runner }}
-    needs: [ prepare, build ]
+    needs: build
     if: ${{ always() }}
     env:
       DEPLOY_ID: ${{ inputs.DEPLOY_ID }}
     steps:
-      - run: sh /run/github-runner/deploy-shanoir post_build ${{ needs.build.result }}
-      - env:
-          TARGETS: ${{ needs.prepare.outputs.targets }}
-        run: printenv
+      - run: sh /run/github-runner/deploy-shanoir post_build ${{ needs.build.result }} ${{ github.run_id }} ${{ github.run_attempt }}
 
 
+  # Deploy to each target
   deploy:
-    needs: [ prepare, build, post_build ]
+    needs: [ prepare, post_build ]
     runs-on: ${{ inputs.runner }}
-    if: ${{ !cancelled() && !failure() }}
+    if: ${{ !cancelled() && !failure() }} # run if 'build' is skipped
     env:
       DEPLOY_ID: ${{ inputs.DEPLOY_ID }}
     strategy:
       matrix:
-        #target: [ neurinfo, ofsep ]
         target: ${{ fromJSON(needs.prepare.outputs.targets) }}
     steps:
       - run: sh /run/github-runner/deploy-shanoir ${{ matrix.target }}
-
-#  deploy-neurinfo:
-#    if: ${{ inputs.neurinfo }}
-#    needs: [ build, post_build ]
-#    runs-on: shanoir-deploy
-#    env:
-#      DEPLOY_ID: ${{ inputs.DEPLOY_ID }}
-#    steps:
-#      - run: sh /run/github-runner/deploy-shanoir neurinfo
-#
-#  deploy-ofsep:
-#    if: ${{ inputs.ofsep }}
-#    needs: [ build, post_build ]
-#    runs-on: shanoir-deploy
-#    env:
-#      DEPLOY_ID: ${{ inputs.DEPLOY_ID }}
-#    steps:
-#      - run: sh /run/github-runner/deploy-shanoir ofsep
-#
-#  deploy-poc-neurinfo:
-#    if: ${{ inputs.poc-neurinfo }}
-#    needs: [ build, post_build ]
-#    runs-on: shanoir-deploy
-#    env:
-#      DEPLOY_ID: ${{ inputs.DEPLOY_ID }}
-#    steps:
-#      - run: sh /run/github-runner/deploy-shanoir poc-neurinfo
